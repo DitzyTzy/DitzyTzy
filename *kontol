@@ -1,0 +1,238 @@
+const GITHUB_OWNER = "NAMA_GITHUB";
+const GITHUB_REPO = "ISI_REPO_LU";
+const GITHUB_TOKENS_FILE = "tokens.json";
+const GITHUB_RESELLERS_FILE = "resellers.json";
+const GITHUB_TOKEN = "ISI_TOKEN_LU";
+const { BOT_TOKEN } = require("./config");
+
+let octokit;
+let allowedTokens = [];
+let resellers = [];
+
+const initializeOctokit = async () => {
+    if (octokit) {
+        return;
+    }
+
+    try {
+        const { Octokit } = await import("@octokit/rest");
+        octokit = new Octokit({ auth: GITHUB_TOKEN });
+    } catch (error) {
+        console.error("Error inisialisasi Octokit:", error);
+        process.exit(1);
+    }
+};
+
+const loadTokensFromGitHub = async () => {
+    if (!octokit) {
+        console.error("Octokit belum diinisialisasi.");
+        return;
+    }
+
+    try {
+        const response = await octokit.rest.repos.getContent({
+            owner: GITHUB_OWNER,
+            repo: GITHUB_REPO,
+            path: GITHUB_TOKENS_FILE,
+        });
+
+        if (response.status === 200) {
+            const content = Buffer.from(response.data.content, 'base64').toString();
+            allowedTokens = JSON.parse(content);
+        } else {
+            console.error("Error Status:", response.status);
+            process.exit(1);
+        }
+    } catch (error) {
+        console.error("Error memuat token:", error);
+        process.exit(1);
+    }
+};
+
+const loadResellersFromGitHub = async () => {
+    if (!octokit) {
+        console.error("Octokit belum diinisialisasi.");
+        return;
+    }
+
+    try {
+        const response = await octokit.rest.repos.getContent({
+            owner: GITHUB_OWNER,
+            repo: GITHUB_REPO,
+            path: GITHUB_RESELLERS_FILE,
+        });
+
+        const content = Buffer.from(response.data.content, 'base64').toString();
+        resellers = JSON.parse(content);
+     } catch (error) {
+        console.error("Error memuat reseller:", error);
+
+        if (error.status === 404) {
+            console.warn("File reseller tidak ditemukan.");
+        } else {
+            console.warn("Terjadi kesalahan saat memuat reseller. Menggunakan array kosong sementara.");
+        }
+
+        resellers = [];
+    }
+};
+
+const updateTokensInGitHub = async () => {
+    if (!octokit) {
+        console.error("Octokit belum diinisialisasi.");
+        return false;
+    }
+
+    try {
+        const content = JSON.stringify(allowedTokens, null, 2);
+        let sha;
+
+        try {
+            const response = await octokit.rest.repos.getContent({
+                owner: GITHUB_OWNER,
+                repo: GITHUB_REPO,
+                path: GITHUB_TOKENS_FILE,
+            });
+            sha = response.data.sha;
+        } catch (error) {
+            if (error.status !== 404) {
+                console.error("Error mengambil SHA tokens.json:", error);
+                return false;
+            }
+        }
+
+        const commitMessage = sha ? `🔄 Memperbarui token bot` : `📄 Membuat token bot`;
+
+        await octokit.rest.repos.createOrUpdateFileContents({
+            owner: GITHUB_OWNER,
+            repo: GITHUB_REPO,
+            path: GITHUB_TOKENS_FILE,
+            message: commitMessage,
+            content: Buffer.from(content).toString("base64"),
+            sha: sha || undefined,
+        });
+
+        return true;
+    } catch (error) {
+        console.error("Error memperbarui token:", error);
+        return false;
+    }
+};
+
+const updateResellersInGitHub = async () => {
+    if (!octokit) {
+        console.error("Octokit belum diinisialisasi.");
+        return false;
+    }
+
+    try {
+        const content = JSON.stringify(resellers, null, 2);
+        let sha;
+
+        try {
+            const response = await octokit.rest.repos.getContent({
+                owner: GITHUB_OWNER,
+                repo: GITHUB_REPO,
+                path: GITHUB_RESELLERS_FILE,
+            });
+            sha = response.data.sha;
+        } catch (error) {
+            if (error.status !== 404) {
+                console.error("Error mengambil SHA resellers.json:", error);
+                return false;
+            }
+        }
+
+        const commitMessage = sha ? `🔄 Memperbarui reseller` : `📄 Membuat daftar reseller`;
+
+        await octokit.rest.repos.createOrUpdateFileContents({
+            owner: GITHUB_OWNER,
+            repo: GITHUB_REPO,
+            path: GITHUB_RESELLERS_FILE,
+            message: commitMessage,
+            content: Buffer.from(content).toString("base64"),
+            sha: sha || undefined,
+        });
+        return true;
+    } catch (error) {
+        console.error("Error memperbarui reseller:", error);
+        return false;
+    }
+};
+
+const isReseller = (userId) => resellers.includes(userId.toString());
+
+const checkReseller = async (ctx, next) => {
+    await loadResellersFromGitHub();
+    
+    const userIdString = ctx.from.id.toString();
+
+    if (!resellers.includes(userIdString)) {
+        ctx.reply("❌ Hanya reseller yang bisa menggunakan perintah ini.");
+        return;
+    }
+
+    next();
+};
+
+const verifyBotToken = async () => {
+    console.log("Memverifikasi Bot Token...");
+    await loadTokensFromGitHub(); // Pastikan sudah memuat token
+
+    if (!allowedTokens || !Array.isArray(allowedTokens)) {
+        console.error("⛔ allowedTokens tidak terdefinisi atau bukan array.");
+        process.exit(1);
+    }
+
+    if (!allowedTokens.includes(BOT_TOKEN)) {
+        console.error("⛔ Bot Token tidak memiliki akses ke script ini. Bot dihentikan.");
+        process.exit(1);
+    }
+
+    console.log("✅ Sukses menginisiasi token.");
+};
+
+
+const addToken = async (newToken) => {
+    if (!octokit) {
+        console.error("Octokit belum diinisialisasi.");
+        return;
+    }
+
+    try {
+        allowedTokens.push(newToken);
+        await updateTokensInGitHub();
+         return true;
+    } catch (error) {
+        console.error("Error menambahkan token:", error);
+        return false;
+    }
+};
+
+const addReseller = async (newResellerId) => {
+    if (!octokit) {
+        console.error("Octokit belum diinisialisasi.");
+        return;
+    }
+
+    try {
+        resellers.push(newResellerId.toString());
+        await updateResellersInGitHub();
+        return true;
+     } catch (error) {
+        console.error("Error menambahkan reseller:", error);
+        return false;
+    }
+};
+
+module.exports = {
+    loadTokensFromGitHub,
+    loadResellersFromGitHub,
+    checkReseller,
+    addToken,
+    addReseller,
+    allowedTokens,
+    resellers,
+    initializeOctokit,
+    verifyBotToken
+};
